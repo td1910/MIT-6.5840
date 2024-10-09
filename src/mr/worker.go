@@ -14,6 +14,14 @@ type KeyValue struct {
 	Value string
 }
 
+// for sorting by key.
+type ByKey []mr.KeyValue
+
+// for sorting by key.
+func (a ByKey) Len() int           { return len(a) }
+func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
+func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
+
 //
 // use ihash(key) % NReduce to choose the reduce
 // task number for each KeyValue emitted by Map.
@@ -31,11 +39,46 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
+	// call coordinate to get task
+	args := RequestTaskReply{}
+	reply := RequestTaskReply{}
+	ok := call("Coordinator.RequestTask", &args, &reply)
+	if ok {
+		fmt.Printf("event=Receive-Task info=%+v\n", reply)
+	} else {
+		fmt.Printf("call failed!\n")
+	}
 
-	// uncomment to send the Example RPC to the coordinator.
-	// CallExample()
+	mapResultFileNames = generateMapOutputFiles(reply.TaskId, reply.NumReduceTasks)
+	fmt.Printf("mapResultFileNames=%+v\n", mapResultFileNames)
 
+
+	intermediate := []mr.KeyValue{}
+	for _, filename := range reply.InputFiles {
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+		}
+		content, err := ioutil.ReadAll(file)
+		if err != nil {
+			log.Fatalf("cannot read %v", filename)
+		}
+		file.Close()
+		kva := mapf(filename, string(content))
+		intermediate = append(intermediate, kva...)
+	}
+
+	bucket = make([][]KeyValue, reply.NumReduceTasks)
+	fmt.Printf("event=Receive-Task info=%+v\n", reply)
+	for _, kv := range intermediate {
+		bucketIdx := ihash(kv.Key)
+		bucket[bucketIdx] = append(bucket[bucketIdx], kv)
+	}
+	fmt.Printf("bucket=%+v\n", bucket)
+
+	// for i := 0; i < reply.NumReduceTasks; i++ {
+	// 	fileName
+	// } 
 }
 
 //
@@ -43,28 +86,9 @@ func Worker(mapf func(string, string) []KeyValue,
 //
 // the RPC argument and reply types are defined in rpc.go.
 //
-func CallExample() {
+func CallRPC() {
 
-	// declare an argument structure.
-	args := ExampleArgs{}
 
-	// fill in the argument(s).
-	args.X = 99
-
-	// declare a reply structure.
-	reply := ExampleReply{}
-
-	// send the RPC request, wait for the reply.
-	// the "Coordinator.Example" tells the
-	// receiving server that we'd like to call
-	// the Example() method of struct Coordinator.
-	ok := call("Coordinator.Example", &args, &reply)
-	if ok {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-	} else {
-		fmt.Printf("call failed!\n")
-	}
 }
 
 //
@@ -88,4 +112,12 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 
 	fmt.Println(err)
 	return false
+}
+
+func generateMapOutputFiles(taskId int, numReduceTasks int) []string {
+	var fileNames []string
+	for i := 0; i < numReduceTasks; i++ {
+		rs = append(rs, fmt.Sprintf("mr-%d-%d", taskId, i))
+	}
+	return fileNames
 }
