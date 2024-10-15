@@ -16,9 +16,7 @@ import "time"
 
 type Task int
 const (
-	Exit Task = iota
-	Wait
-	Map
+	Map Task = iota
 	Reduce
 )
 
@@ -33,7 +31,7 @@ type MRTask struct {
 	TaskType   	Task
 	Status 		Status
 	Index       int
-	UpdatedAt   time.Time
+	AssignedAt   time.Time
 	InputFiles  []string
 	OutputFiles []string
 }
@@ -46,6 +44,14 @@ type RequestTaskReply struct {
 	TaskInputFiles []string
 }
 
+type TaskDoneArgs struct {
+	TaskType string
+	TaskId   int
+}
+
+type TaskDoneReply struct {
+	Success bool
+}
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
 // Can't use the current directory since

@@ -4,7 +4,11 @@ import "fmt"
 import "log"
 import "net/rpc"
 import "hash/fnv"
-
+import "sort"
+import "encoding/json"
+// import "time"
+import "os"
+import "io/ioutil"
 
 //
 // Map functions return a slice of KeyValue.
@@ -15,7 +19,7 @@ type KeyValue struct {
 }
 
 // for sorting by key.
-type ByKey []mr.KeyValue
+type ByKey []KeyValue
 
 // for sorting by key.
 func (a ByKey) Len() int           { return len(a) }
@@ -39,22 +43,19 @@ func ihash(key string) int {
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// call coordinate to get task
-	args := RequestTaskReply{}
-	reply := RequestTaskReply{}
-	ok := call("Coordinator.RequestTask", &args, &reply)
+	// Call Coordinator to get a task
+	requestArgs := RequestTaskReply{}
+	requestReply := RequestTaskReply{}
+	ok := call("Coordinator.RequestTask", &requestArgs, &requestReply)
 	if ok {
-		fmt.Printf("event=Receive-Task info=%+v\n", reply)
+		fmt.Printf("event=Receive-Task info=%+v\n", requestReply)
 	} else {
-		fmt.Printf("call failed!\n")
+		fmt.Printf("event=call-RequestTask-failed!\n")
+		return
 	}
 
-	mapResultFileNames = generateMapOutputFiles(reply.TaskId, reply.NumReduceTasks)
-	fmt.Printf("mapResultFileNames=%+v\n", mapResultFileNames)
-
-
-	intermediate := []mr.KeyValue{}
-	for _, filename := range reply.InputFiles {
+	intermediate := []KeyValue{}
+	for _, filename := range requestReply.TaskInputFiles {
 		file, err := os.Open(filename)
 		if err != nil {
 			log.Fatalf("cannot open %v", filename)
@@ -68,17 +69,56 @@ func Worker(mapf func(string, string) []KeyValue,
 		intermediate = append(intermediate, kva...)
 	}
 
-	bucket = make([][]KeyValue, reply.NumReduceTasks)
-	fmt.Printf("event=Receive-Task info=%+v\n", reply)
+	// Sort intermediate key-value pairs
+	sort.Sort(ByKey(intermediate))
+
+	// Prepare buckets for reduce tasks
+	bucket := make([][]KeyValue, requestReply.NumReduceTasks)
 	for _, kv := range intermediate {
-		bucketIdx := ihash(kv.Key)
+		bucketIdx := ihash(kv.Key) % requestReply.NumReduceTasks
 		bucket[bucketIdx] = append(bucket[bucketIdx], kv)
 	}
-	fmt.Printf("bucket=%+v\n", bucket)
 
-	// for i := 0; i < reply.NumReduceTasks; i++ {
-	// 	fileName
-	// } 
+	// Write intermediate results to files
+	taskId := requestReply.TaskId
+	for reduceTaskId := 0; reduceTaskId < requestReply.NumReduceTasks; reduceTaskId++ {
+		// Create a temporary file
+		tempFile, err := os.CreateTemp("", fmt.Sprintf("mr-%d-%d-*", taskId, reduceTaskId))
+		if err != nil {
+			log.Fatalf("cannot create temp file: %v", err)
+		}
+
+		// Encode data to the temporary file
+		enc := json.NewEncoder(tempFile)
+		for _, kv := range bucket[reduceTaskId] {
+			if err := enc.Encode(&kv); err != nil {
+				log.Fatalf("cannot encode kv pair: %v", err)
+			}
+		}
+
+		// Close the temporary file
+		if err := tempFile.Close(); err != nil {
+			log.Fatalf("cannot close temp file: %v", err)
+		}
+
+		// Atomically rename the temporary file to the final file name
+		finalFileName := fmt.Sprintf("mr-%d-%d", taskId, reduceTaskId)
+		if err := os.Rename(tempFile.Name(), finalFileName); err != nil {
+			log.Fatalf("cannot rename temp file: %v", err)
+		}
+	}
+
+	// Notify Coordinator that the task is done
+	fmt.Printf("event=done-task info=%+v\n", taskId)
+	taskDoneArgs := TaskDoneArgs{
+		TaskType: "Map", // This should be dynamic based on the task
+		TaskId:   taskId,
+	}
+	var taskDoneReply TaskDoneReply
+	ok = call("Coordinator.NotifyTaskDone", &taskDoneArgs, &taskDoneReply)
+	if !ok {
+		fmt.Printf("event=call-NotifyTaskDone-failed!\n")
+	}
 }
 
 //
@@ -117,7 +157,7 @@ func call(rpcname string, args interface{}, reply interface{}) bool {
 func generateMapOutputFiles(taskId int, numReduceTasks int) []string {
 	var fileNames []string
 	for i := 0; i < numReduceTasks; i++ {
-		rs = append(rs, fmt.Sprintf("mr-%d-%d", taskId, i))
+		fileNames = append(fileNames, fmt.Sprintf("mr-%d-%d", taskId, i))
 	}
 	return fileNames
 }
