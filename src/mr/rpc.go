@@ -18,7 +18,21 @@ type Task int
 const (
 	Map Task = iota
 	Reduce
+	None
 )
+
+func (t Task) String() string {
+	switch t {
+	case Map:
+		return "Map"
+	case Reduce:
+		return "Reduce"
+	case None:
+		return "None"
+	default:
+		return "Unknown"
+	}
+}
 
 type Status int
 const (
@@ -26,6 +40,20 @@ const (
 	Assigned
 	Done
 )
+
+
+func (s Status) String() string {
+	switch s {
+	case Unassigned:
+		return "Unassigned"
+	case Assigned:
+		return "Assigned"
+	case Done:
+		return "Done"
+	default:
+		return "Unknown Status"
+	}
+}
 
 type MRTask struct {
 	TaskType   	Task
@@ -40,13 +68,14 @@ type MRTask struct {
 type RequestTaskReply struct {
 	TaskId 	 	   int
 	TaskType 	   Task
-	NumReduceTasks int	
+	NumReduceTasks int
 	TaskInputFiles []string
 }
 
 type TaskDoneArgs struct {
-	TaskType string
+	TaskType Task
 	TaskId   int
+	OutputFiles []string
 }
 
 type TaskDoneReply struct {

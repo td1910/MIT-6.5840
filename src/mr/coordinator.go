@@ -36,7 +36,7 @@ func (c *Coordinator) RequestTask(args *RequestTaskReply, reply *RequestTaskRepl
 	defer c.Mutex.Unlock()
 
 	for i, task := range c.MapTasks {
-		if task.Status == Unassigned {
+		if task.Status == Unassigned || (task.Status == Assigned && time.Since(c.MapTasks[i].AssignedAt) > 5*time.Second) {
 			// update task info
 			c.MapTasks[i].Status = Assigned
         	c.MapTasks[i].AssignedAt = time.Now()
@@ -50,22 +50,28 @@ func (c *Coordinator) RequestTask(args *RequestTaskReply, reply *RequestTaskRepl
 			return nil  // Return after assigning one task
 		}
 	}
+	if c.MapTasksLeft == 0 {
+		// no Map task left, so try to assign a Reduce task
+		for i, task := range c.ReduceTasks {
+			if task.Status == Unassigned || (task.Status == Assigned && time.Since(c.ReduceTasks[i].AssignedAt) > 5*time.Second) {
+				// update task info
+				c.ReduceTasks[i].Status = Assigned
+				c.ReduceTasks[i].AssignedAt = time.Now()
 
-	// no Map task left, so try to assign a Reduce task
-	// for i, task := range c.ReduceTasks {
-	// 	if task.Status == Unassigned {
-	// 		// update task info
-	// 		task.Status = Assigned
-	// 		task.UpdatedAt = time.Now()
+				reply.TaskId = i
+				reply.TaskType = task.TaskType
+				reply.NumReduceTasks = c.NumReduceTasks
+				reply.TaskInputFiles = task.InputFiles
 
-	// 		reply.TaskId = i
-	// 		reply.TaskType = task.TaskType
-	// 		reply.NumReduceTasks = c.NumReduceTasks
-	// 		reply.TaskInputFiles = task.InputFiles
-			
-	// 		return nil  // Return after assigning one task
-	// 	}
-	// }
+				fmt.Printf("event=Reduce-Task-Assigned task_id=%v\n", i)
+				return nil  // Return after assigning one task
+			}
+		}
+	}
+
+
+	// No task left
+	reply.TaskType = None
 	return nil
 }
 
@@ -74,15 +80,28 @@ func (c *Coordinator) NotifyTaskDone(args *TaskDoneArgs, reply *TaskDoneReply) e
 	defer c.Mutex.Unlock()
 
 	switch args.TaskType {
-	case "Map":
-		c.MapTasks[args.TaskId].Status = Done
-	case "Reduce":
-		c.ReduceTasks[args.TaskId].Status = Done
-	default:
-		return fmt.Errorf("invalid taskType: %s", args.TaskType)
-	}
+	case Map:
+		if c.MapTasks[args.TaskId].Status != Done {
+			c.MapTasks[args.TaskId].Status = Done
 
-	fmt.Printf("event=mark-done-task task_type=%+v task_id=%+v\n", args.TaskType, args.TaskId)
+			for reduceTaskId := 0; reduceTaskId < c.NumReduceTasks; reduceTaskId++ {
+				outputFile := args.OutputFiles[reduceTaskId]
+				c.ReduceTasks[reduceTaskId].InputFiles = append(c.ReduceTasks[reduceTaskId].InputFiles, outputFile)
+			}
+			c.MapTasksLeft--
+			fmt.Printf("event=done-map-task task_id=%+v\n", args.TaskId)
+		}
+	case Reduce:
+		if c.ReduceTasks[args.TaskId].Status != Done {
+			c.ReduceTasks[args.TaskId].Status = Done
+			c.ReduceTasks[args.TaskId].OutputFiles = args.OutputFiles
+			c.ReduceTasksLeft--
+			fmt.Printf("event=done-reduce-task task_id=%+v\n", args.TaskId)
+
+		}
+	default:
+		return fmt.Errorf("event=Notify-invalid-task-type: %s", args.TaskType.String())
+	}
 	reply.Success = true
 	return nil
 }
@@ -107,12 +126,14 @@ func (c *Coordinator) server() {
 // if the entire job has finished.
 //
 func (c *Coordinator) Done() bool {
-	ret := false
+	c.Mutex.Lock()
+	defer c.Mutex.Unlock()
 
-	// Your code here.
-
-
-	return ret
+	if c.MapTasksLeft == 0 && c.ReduceTasksLeft == 0 {
+		fmt.Println("Done-all-tasks")
+		return true
+	}
+	return false
 }
 
 //
@@ -151,19 +172,11 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 			Index: i,
 			AssignedAt: time.Now(),
 			InputFiles: nil, // will be fetched when done i-th map task
-			OutputFiles: []string{fmt.Sprintf("mr-out-%d", i)},
+			OutputFiles: nil, // will be fetched when done i-th reduce tasks
 		}
 	}
 
 	c.server()
 	fmt.Printf("event=coordinator-ready\n")
 	return &c
-}
-
-func generateReduceInputFiles(i int, numFiles int) []string {
-	var inputFiles []string
-	for j := 0; j < numFiles; j++ {
-		inputFiles = append(inputFiles, fmt.Sprintf("mr-%d-%d", i, j))
-	}
-	return inputFiles
 }
